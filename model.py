@@ -310,7 +310,7 @@ class OpenUnmix_multitask(nn.Module):
         )
 
         self.bn2 = BatchNorm1d(hidden_size)
-        '''
+     
         self.fc2_inst = Linear(
             in_features=hidden_size,
             out_features=hidden_size,
@@ -318,7 +318,7 @@ class OpenUnmix_multitask(nn.Module):
         )
 
         self.bn2_inst = BatchNorm1d(hidden_size)        
-        '''
+ 
         self.fc3 = Linear(
             in_features=hidden_size,
             out_features=self.nb_output_bins*nb_channels,
@@ -326,13 +326,13 @@ class OpenUnmix_multitask(nn.Module):
         )
 
         self.bn3 = BatchNorm1d(self.nb_output_bins*nb_channels)
-        '''
+
         self.fc3_inst = Linear(
             in_features=hidden_size,
             out_features=1*nb_channels,
             bias=False
         )
-        '''
+
         if input_mean is not None:
             input_mean = torch.from_numpy(
                 -input_mean[:self.nb_bins]
@@ -390,26 +390,20 @@ class OpenUnmix_multitask(nn.Module):
         x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
 
         # inst branch
-        '''
         y_inst = self.fc2_inst(lstm_out[0].reshape(-1, lstm_out[0].shape[-1]))
         y_inst = self.bn2_inst(y_inst)
         y_inst = F.relu(y_inst)
         y_inst = self.fc3_inst(y_inst)
         y_inst = y_inst.reshape(nb_frames, nb_samples, nb_channels)
-        '''
-
+  
         # apply output scaling
         x *= self.output_scale
         x += self.output_mean
 
         # since our output is non-negative, we can apply RELU
         x = F.relu(x) * mix
-
-        #inst branch
-        y_inst = x.sum(-1)/ self.nb_output_bins
-        y_inst[y_inst>0]=1
-
-        return x, y_inst
+     
+        return x*y_inst.unsqueeze(-1), y_inst
 
 class OpenUnmix_multiinp(nn.Module):
     def __init__(

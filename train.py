@@ -14,7 +14,7 @@ from git import Repo
 import os
 import copy
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 tqdm.monitor_interval = 0
 
 
@@ -23,28 +23,24 @@ def train(args, unmix, device, train_sampler, optimizer):
     losses = utils.AverageMeter()
     unmix.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
-    for x, y, inst in pbar:
+    for x, y, Y_inst in pbar:
         pbar.set_description("Training batch")
-        x, y, inst = x.to(device), y.to(device), inst.float().to(device)
+        x, y, Y_inst = x.to(device), y.to(device), Y_inst.float().to(device)
         optimizer.zero_grad()
         if args.mode=='multitask':
             Y_hat, Y_inst_hat = unmix(x)
         elif args.mode=='ori':
             Y_hat = unmix(x)
         elif args.mode=='multiinp':
-            Y_hat = unmix(x, inst)
+            Y_hat = unmix(x, Y_inst)
 
         Y = unmix.transform(y)
         loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
-        ##############
         if args.mode=='multitask':
         # for instrument
-            Y_inst = Y.sum(-1)
-            Y_inst[Y_inst>0] = 1
             loss_inst = torch.nn.functional.binary_cross_entropy(Y_inst_hat, Y_inst)
-          
-        ##############
+
         if args.mode=='multitask':
             (loss+loss_inst*10).backward()
         elif args.mode=='ori' or args.mode=='multiinp':
