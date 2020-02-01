@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from utils import fgsm_attack
 
 class NoOp(nn.Module):
     def __init__(self):
@@ -297,7 +298,25 @@ class OpenUnmix_multitask(nn.Module):
         self.lstm = LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden_size,
-            num_layers=nb_layers,
+            num_layers=2,
+            bidirectional=not unidirectional,
+            batch_first=False,
+            dropout=0.4,
+        )
+
+        self.lstm_sep = LSTM(
+            input_size=hidden_size,
+            hidden_size=lstm_hidden_size,
+            num_layers=1,
+            bidirectional=not unidirectional,
+            batch_first=False,
+            dropout=0.4,
+        )
+
+        self.lstm_act = LSTM(
+            input_size=hidden_size,
+            hidden_size=lstm_hidden_size,
+            num_layers=1,
             bidirectional=not unidirectional,
             batch_first=False,
             dropout=0.4,
@@ -356,12 +375,16 @@ class OpenUnmix_multitask(nn.Module):
         self.output_mean = Parameter(
             torch.ones(self.nb_output_bins).float()
         )
+        self.threshold = Parameter(torch.zeros(1))
 
-    def forward(self, x):
+        #self.gradient = None
+
+    def forward(self, x, device):
         # check for waveform or spectrogram
         # transform to spectrogram if (nb_samples, nb_channels, nb_timesteps)
         # and reduce feature dimensions, therefore we reshape
         x = self.transform(x)
+
         nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape
         mix = x.detach().clone()
 
@@ -381,7 +404,7 @@ class OpenUnmix_multitask(nn.Module):
         lstm_out = self.lstm(x)
 
         # lstm skip connection to decode spectrogram
-        x = torch.cat([x, lstm_out[0]], -1)
+        x = torch.cat([x, self.lstm_sep(lstm_out[0])[0]], -1)
         x = self.fc2(x.reshape(-1, x.shape[-1]))
         x = self.bn2(x)
         x = F.relu(x)
@@ -390,7 +413,8 @@ class OpenUnmix_multitask(nn.Module):
         x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
 
         # inst branch
-        y_inst = self.fc2_inst(lstm_out[0].reshape(-1, lstm_out[0].shape[-1]))
+        act_out = self.lstm_act(lstm_out[0])[0]
+        y_inst = self.fc2_inst(act_out.reshape(-1, act_out.shape[-1]))
         y_inst = self.bn2_inst(y_inst)
         y_inst = F.relu(y_inst)
         y_inst = self.fc3_inst(y_inst)
@@ -401,9 +425,16 @@ class OpenUnmix_multitask(nn.Module):
         x += self.output_mean
 
         # since our output is non-negative, we can apply RELU
-        x = F.relu(x) * mix
+        
+        '''
+        inst_filter = F.sigmoid(y_inst)
+        one = torch.ones(inst_filter.shape).float().to(device)
+        zero = torch.zeros(inst_filter.shape).float().to(device)
+        inst_filter = torch.where(inst_filter>0.5, one, zero)
+        '''
+        x = F.relu(x)*F.sigmoid(y_inst).unsqueeze(-1) * mix
      
-        return x*y_inst.unsqueeze(-1), y_inst
+        return x, y_inst
 
 class OpenUnmix_multiinp(nn.Module):
     def __init__(
@@ -469,7 +500,7 @@ class OpenUnmix_multiinp(nn.Module):
         )
 
         self.fc2 = Linear(
-            in_features=hidden_size*2,
+            in_features=(hidden_size+1)*2,
             out_features=hidden_size,
             bias=False
         )
@@ -558,7 +589,7 @@ class OpenUnmix_multiinp(nn.Module):
         # lstm skip connection to decode spectrogram
         x = torch.cat([x, lstm_out[0]], -1)
   
-        #x = torch.cat((x, y_inst.reshape(x.shape[0], x.shape[1], 2)), -1)
+        x = torch.cat((x, y_inst.reshape(x.shape[0], x.shape[1], 2)), -1)
 
         x = self.fc2(x.reshape(-1, x.shape[-1]))
         x = self.bn2(x)

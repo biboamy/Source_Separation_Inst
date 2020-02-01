@@ -13,9 +13,36 @@ import random
 from git import Repo
 import os
 import copy
+import torch.nn.functional as F
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '1' 
 tqdm.monitor_interval = 0
+
+def start_train(x, y, Y_inst, args, unmix, device, optimizer):
+
+    optimizer.zero_grad()
+
+    if args.mode=='multitask':
+        Y_hat, Y_inst_hat = unmix(x, device)
+    elif args.mode=='ori':
+        Y_hat = unmix(x)
+    elif args.mode=='multiinp':
+        Y_hat = unmix(x, Y_inst)
+
+    Y = unmix.transform(y)
+
+    loss = torch.nn.functional.mse_loss(Y_hat, Y)
+
+    if args.mode=='multitask':
+        Y_inst[Y_inst>0.01] = 1
+        loss_inst = torch.nn.functional.binary_cross_entropy_with_logits(Y_inst_hat.permute(1,2,0), Y_inst)
+
+    if args.mode=='multitask':
+        (loss+loss_inst*2).backward()
+    elif args.mode=='ori' or args.mode=='multiinp':
+        (loss).backward()
+
+    return loss
 
 
 def train(args, unmix, device, train_sampler, optimizer):
@@ -23,30 +50,21 @@ def train(args, unmix, device, train_sampler, optimizer):
     losses = utils.AverageMeter()
     unmix.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
+
     for x, y, Y_inst in pbar:
         pbar.set_description("Training batch")
         x, y, Y_inst = x.to(device), y.to(device), Y_inst.float().to(device)
-        optimizer.zero_grad()
-        if args.mode=='multitask':
-            Y_hat, Y_inst_hat = unmix(x)
-        elif args.mode=='ori':
-            Y_hat = unmix(x)
-        elif args.mode=='multiinp':
-            Y_hat = unmix(x, Y_inst)
+        x.requires_grad = True
 
-        Y = unmix.transform(y)
-        loss = torch.nn.functional.mse_loss(Y_hat, Y)
-
-        if args.mode=='multitask':
-        # for instrument
-            loss_inst = torch.nn.functional.binary_cross_entropy(Y_inst_hat, Y_inst)
-
-        if args.mode=='multitask':
-            (loss+loss_inst*10).backward()
-        elif args.mode=='ori' or args.mode=='multiinp':
-            (loss).backward()
+        loss = start_train(x, y, Y_inst, args, unmix, device, optimizer)
+        if args.advTrain:
+            new_x = utils.fgsm_attack(x-y, 0.2, x.grad.data)+y
         optimizer.step()
-        losses.update(loss.item(), Y.size(1))
+
+        loss2 = start_train(new_x, y, Y_inst, args, unmix, device, optimizer)
+        
+        losses.update(loss.item(), y.size(0))
+
     return losses.avg
 
 
@@ -57,12 +75,13 @@ def valid(args, unmix, device, valid_sampler):
         for x, y, inst in valid_sampler:
             x, y, inst = x.to(device), y.to(device), inst.float().to(device)
             if args.mode == 'multitask':
-                Y_hat, Y_inst_hat = unmix(x)
+                Y_hat, Y_inst_hat = unmix(x, device)
             elif args.mode == 'ori':
                 Y_hat = unmix(x)
             elif args.mode=='multiinp':
                 Y_hat = unmix(x, inst)
             Y = unmix.transform(y)
+
             loss = torch.nn.functional.mse_loss(Y_hat, Y)
             losses.update(loss.item(), Y.size(1))
         return losses.avg
@@ -159,6 +178,8 @@ def main():
                         help='disables CUDA training')
     parser.add_argument('--mode', type=str, default="ori",
                         help='Training mode')
+    parser.add_argument('--advTrain', action='store_true', default=False,
+                        help='enables adv training')
 
     args, _ = parser.parse_known_args()
 

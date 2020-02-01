@@ -79,7 +79,7 @@ def load_model(target, model_name='umxhq', device='cpu', args=None):
                 hidden_size=results['args']['hidden_size'],
                 max_bin=max_bin
             )
-
+    
         unmix.load_state_dict(state)
         unmix.stft.center = True
         unmix.eval()
@@ -162,7 +162,7 @@ def separate(
             args=args
         )
         if args.mode=='multitask':
-            Vj = unmix_target(audio_torch)[0].cpu().detach().numpy()
+            Vj = unmix_target(audio_torch, device)[0].cpu().detach().numpy()
         elif args.mode=='ori':
             Vj = unmix_target(audio_torch).cpu().detach().numpy()
         elif args.mode=='multiinp':

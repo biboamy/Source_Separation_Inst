@@ -165,6 +165,16 @@ def compute_activation_confidence(audio, win_len=4096, lpf_cutoff=0.075,
     )
     return C
 
+def fgsm_attack(data_input, epsilon, data_grad):
+    # Collect the element-wise sign of the data gradient
+    sign_data_grad = data_grad.sign()
+    # Create the perturbed image by adjusting each pixel of the input image
+    perturbed_data = data_input + epsilon*sign_data_grad
+    # Adding clipping to maintain [0,1] range
+    #perturbed_data= torch.clamp(perturbed_data, 0, 1)
+    # Return the perturbed image
+    return perturbed_data
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):

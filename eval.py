@@ -111,6 +111,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--mode', type=str, default="ori",
                         help='Training mode')
+    parser.add_argument('--advTrain', action='store_true', default=False,
+                        help='enables adv training')
 
     args, _ = parser.parse_known_args()
     args = test.inference_args(parser, args)
