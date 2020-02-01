@@ -18,9 +18,7 @@ import torch.nn.functional as F
 os.environ['CUDA_VISIBLE_DEVICES'] = '1' 
 tqdm.monitor_interval = 0
 
-def start_train(x, y, Y_inst, args, unmix, device, optimizer):
-
-    optimizer.zero_grad()
+def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha):
 
     if args.mode=='multitask':
         Y_hat, Y_inst_hat = unmix(x, device)
@@ -38,7 +36,7 @@ def start_train(x, y, Y_inst, args, unmix, device, optimizer):
         loss_inst = torch.nn.functional.binary_cross_entropy_with_logits(Y_inst_hat.permute(1,2,0), Y_inst)
 
     if args.mode=='multitask':
-        (loss+loss_inst*2).backward()
+        (alpha*(loss+loss_inst*2)).backward()
     elif args.mode=='ori' or args.mode=='multiinp':
         (loss).backward()
 
@@ -56,12 +54,15 @@ def train(args, unmix, device, train_sampler, optimizer):
         x, y, Y_inst = x.to(device), y.to(device), Y_inst.float().to(device)
         x.requires_grad = True
 
-        loss = start_train(x, y, Y_inst, args, unmix, device, optimizer)
-        if args.advTrain:
-            new_x = utils.fgsm_attack(x-y, 0.2, x.grad.data)+y
-        optimizer.step()
+        optimizer.zero_grad()
 
-        loss2 = start_train(new_x, y, Y_inst, args, unmix, device, optimizer)
+        loss = start_train(x, y, Y_inst, args, unmix, device, optimizer, 1)
+        if args.advTrain:
+            new_x = utils.fgsm_attack(x-y, 0.03, x.grad.data)+y
+
+            loss2 = start_train(new_x, y, Y_inst, args, unmix, device, optimizer, 0.1)
+
+        optimizer.step()
         
         losses.update(loss.item(), y.size(0))
 
