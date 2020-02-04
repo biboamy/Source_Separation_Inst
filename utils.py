@@ -61,12 +61,13 @@ def soundfile_loader(path, start=0, dur=None):
         # set to None for reading complete file
         stop = dur
 
-    audio, _ = soundfile.read(
+    audio, sr = soundfile.read(
         path,
         always_2d=True,
         start=start,
         stop=stop
     )
+    print(sr)
     return torch.FloatTensor(audio.T)
 
 
@@ -161,9 +162,10 @@ def compute_activation_confidence(audio, win_len=4096, lpf_cutoff=0.075,
     H = scipy.signal.filtfilt(b, a, H, axis=1)
     C = 1.0 - (1.0 / (1.0 + np.exp(np.dot(var_lambda, (H - theta)))))
     time = librosa.core.frames_to_time(
-        np.arange(C.shape[1]), sr=44100, hop_length=win_len // 2
+        np.arange(C.shape[1]), sr=44100, hop_length=win_len // 4
     )
-    return C
+    
+    return C, time
 
 def fgsm_attack(data_input, epsilon, data_grad):
     # Collect the element-wise sign of the data gradient

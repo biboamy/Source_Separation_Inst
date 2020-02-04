@@ -813,7 +813,7 @@ class MUSDBDataset(torch.utils.data.Dataset):
                 # apply time domain subtraction
                 y = x - stems[vocind]
 
-            inst = torch.from_numpy(compute_activation_confidence(inst_track)[:,1:-1])#.to(device)
+            inst = torch.from_numpy(compute_activation_confidence(inst_track)[0][:,1:-1])#.to(device)
   
             return x, y, inst
         # for validation and test, we deterministically yield the full
@@ -829,7 +829,7 @@ class MUSDBDataset(torch.utils.data.Dataset):
                 dtype=self.dtype
             )
             if self.split == 'valid':
-                inst = torch.from_numpy(compute_activation_confidence(track.sources[self.target].audio)[:,1:-1])
+                inst = torch.from_numpy(compute_activation_confidence(track.sources[self.target].audio)[0][:,1:-1])
 
                 return x, y, inst
             else:

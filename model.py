@@ -310,7 +310,7 @@ class OpenUnmix_multitask(nn.Module):
             num_layers=1,
             bidirectional=not unidirectional,
             batch_first=False,
-            dropout=0.4,
+            #dropout=0.4,
         )
 
         self.lstm_act = LSTM(
@@ -319,7 +319,7 @@ class OpenUnmix_multitask(nn.Module):
             num_layers=1,
             bidirectional=not unidirectional,
             batch_first=False,
-            dropout=0.4,
+            #dropout=0.4,
         )
 
         self.fc2 = Linear(
@@ -432,6 +432,7 @@ class OpenUnmix_multitask(nn.Module):
         zero = torch.zeros(inst_filter.shape).float().to(device)
         inst_filter = torch.where(inst_filter>0.5, one, zero)
         '''
+        #x = F.relu(x)*F.sigmoid(y_inst).unsqueeze(-1) * mix
         x = F.relu(x)*F.sigmoid(y_inst).unsqueeze(-1) * mix
      
         return x, y_inst

@@ -33,13 +33,14 @@ def separate_and_evaluate(
         target_audio=track.sources[targets[0]].audio
     )
     if output_dir:
-        mus.save_estimates(estimates, track, output_dir)
+        mus.save_estimates(estimates[0], track, output_dir)
 
     scores = museval.eval_mus_track(
         track, estimates, output_dir=eval_dir
     )
+    print(track)
     print(scores)
-    return scores
+    return scores, estimates[1][0], estimates[1][1]
 
 
 if __name__ == '__main__':
@@ -113,6 +114,8 @@ if __name__ == '__main__':
                         help='Training mode')
     parser.add_argument('--advTrain', action='store_true', default=False,
                         help='enables adv training')
+    parser.add_argument('--testInst', action='store_true', default=False,
+                        help='instrument activity testing')
 
     args, _ = parser.parse_known_args()
     args = test.inference_args(parser, args)
@@ -153,6 +156,8 @@ if __name__ == '__main__':
             results.add_track(scores)
 
     else:
+        F1 = []
+        AUC = []
         results = museval.EvalStore()
         for track in tqdm.tqdm(mus.tracks):
             scores = separate_and_evaluate(
@@ -167,9 +172,13 @@ if __name__ == '__main__':
                 device=device,
                 args=args
             )
-            results.add_track(scores)
+            results.add_track(scores[0])
+            F1.append(scores[1])
+            AUC.append(scores[2])
 
     print(results)
+    print('F1:', sum(F1)/len(F1))
+    print('AUC:', sum(AUC)/len(AUC))
     method = museval.MethodStore()
     method.add_evalstore(results, args.model)
     method.save(args.model + '.pandas')

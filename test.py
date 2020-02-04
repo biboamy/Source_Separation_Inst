@@ -14,6 +14,8 @@ import tqdm
 from contextlib import redirect_stderr
 import io
 from utils import compute_activation_confidence
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics import f1_score
 
 def load_model(target, model_name='umxhq', device='cpu', args=None):
     """
@@ -149,7 +151,9 @@ def separate(
     """
     # convert numpy audio to torch
     audio_torch = torch.tensor(audio.T[None, ...]).float().to(device)
-    inst = torch.from_numpy(compute_activation_confidence(audio)[:,1:-1]).float().to(device)
+    activity, frame_time = compute_activation_confidence(audio)
+    inst_gt = torch.from_numpy(activity).float().to(device)
+    frame_time = np.floor(frame_time)
 
     source_names = []
     V = []
@@ -162,17 +166,55 @@ def separate(
             args=args
         )
         if args.mode=='multitask':
-            Vj = unmix_target(audio_torch, device)[0].cpu().detach().numpy()
+            Vj, inst_act = unmix_target(audio_torch, device)
+            Vj = Vj.cpu().detach().numpy()
+            inst_act = inst_act.squeeze().T.cpu().detach().numpy()
         elif args.mode=='ori':
             Vj = unmix_target(audio_torch).cpu().detach().numpy()
         elif args.mode=='multiinp':
-            Vj = unmix_target(audio_torch, inst[None, ...]).cpu().detach().numpy()
+            Vj = unmix_target(audio_torch, inst_gt[None, ...]).cpu().detach().numpy()
         if softmask:
             # only exponentiate the model if we use softmask
             Vj = Vj**alpha
         # output is nb_frames, nb_samples, nb_channels, nb_bins
         V.append(Vj[:, 0, ...])  # remove sample dim
         source_names += [target]
+
+    if args.mode=='multitask' and args.testInst:
+        inst_gt[inst_gt>0.5] = 1
+        inst_gt[inst_gt<=0.5] = 0
+        inst_gt = inst_gt.sum(0, keepdims=True) / 2
+        inst_gt[inst_gt>0] = 1
+
+        inst_act_prob = inst_act
+        inst_act_prob = inst_act_prob.max(0, keepdims=True)
+
+        inst_act[inst_act>0.5] = 1
+        inst_act[inst_act<=0.5] = 1
+        inst_act = inst_act.sum(0, keepdims=True) / 2
+        inst_act[inst_act>0] = 1
+        
+        inst_gt = np.concatenate((np.expand_dims(frame_time, 0), inst_gt)).T
+        inst_act = np.concatenate((np.expand_dims(frame_time, 0), inst_act)).T
+        inst_act_prob = np.concatenate((np.expand_dims(frame_time, 0), inst_act_prob)).T
+
+        inst_gt = np.split(inst_gt[:, 1], np.cumsum(np.unique(inst_gt[:, 0], return_counts=True)[1])[:-1])
+        inst_act = np.split(inst_act[:, 1], np.cumsum(np.unique(inst_act[:, 0], return_counts=True)[1])[:-1])
+        inst_act_prob = np.split(inst_act_prob[:, 1], np.cumsum(np.unique(inst_act_prob[:, 0], return_counts=True)[1])[:-1])
+        
+        inst_gt = np.array([sum(a) for a in inst_gt])
+        inst_act = np.array([sum(a) for a in inst_act])
+        inst_act_prob = np.array([max(a) for a in inst_act_prob])
+
+        inst_gt[inst_gt>0] = 1
+        inst_act[inst_act>0] = 1
+
+        print(inst_gt.max(), inst_gt.min())
+
+        f1 = f1_score(inst_gt, inst_act)
+        auc = roc_auc_score(inst_gt, inst_act_prob)
+        print()
+        print("F1: %f / AUC: %f", f1, auc)
 
     V = np.transpose(np.array(V), (1, 3, 2, 0))
 
@@ -202,7 +244,7 @@ def separate(
         )
         estimates[name] = audio_hat.T
 
-    return estimates
+    return estimates, [f1, auc]
 
 
 def inference_args(parser, remaining_args):

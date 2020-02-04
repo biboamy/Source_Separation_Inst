@@ -15,7 +15,7 @@ import os
 import copy
 import torch.nn.functional as F
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 tqdm.monitor_interval = 0
 
 def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha):
@@ -32,7 +32,9 @@ def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha):
     loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
     if args.mode=='multitask':
-        Y_inst[Y_inst>0.01] = 1
+        Y_inst[Y_inst>=0.5] = 1
+        Y_inst[Y_inst<0.5] = 0
+        
         loss_inst = torch.nn.functional.binary_cross_entropy_with_logits(Y_inst_hat.permute(1,2,0), Y_inst)
 
     if args.mode=='multitask':
@@ -58,7 +60,7 @@ def train(args, unmix, device, train_sampler, optimizer):
 
         loss = start_train(x, y, Y_inst, args, unmix, device, optimizer, 1)
         if args.advTrain:
-            new_x = utils.fgsm_attack(x-y, 0.03, x.grad.data)+y
+            new_x = utils.fgsm_attack(x-y, 0.01, x.grad.data)+y
 
             loss2 = start_train(new_x, y, Y_inst, args, unmix, device, optimizer, 0.1)
 
