@@ -294,34 +294,34 @@ class OpenUnmix_multitask(nn.Module):
             lstm_hidden_size = hidden_size
         else:
             lstm_hidden_size = hidden_size // 2
-
+        '''
         self.lstm = LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden_size,
-            num_layers=2,
+            num_layers=3,
             bidirectional=not unidirectional,
             batch_first=False,
             dropout=0.4,
         )
-
+        '''
         self.lstm_sep = LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden_size,
-            num_layers=1,
+            num_layers=3,
             bidirectional=not unidirectional,
             batch_first=False,
-            #dropout=0.4,
+            dropout=0.4,
         )
-
+        '''
         self.lstm_act = LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden_size,
-            num_layers=1,
+            num_layers=3,
             bidirectional=not unidirectional,
             batch_first=False,
-            #dropout=0.4,
+            dropout=0.4,
         )
-
+        '''
         self.fc2 = Linear(
             in_features=hidden_size*2,
             out_features=hidden_size,
@@ -377,65 +377,75 @@ class OpenUnmix_multitask(nn.Module):
         )
         self.threshold = Parameter(torch.zeros(1))
 
-        #self.gradient = None
+        self.gradient = None
 
-    def forward(self, x, device):
+        self.enhance = Linear(
+            in_features=self.nb_output_bins*nb_channels,
+            out_features=1*nb_channels,
+            bias=False
+        )
+
+    def forward(self, x, device, y=None, advTrain=False):
         # check for waveform or spectrogram
         # transform to spectrogram if (nb_samples, nb_channels, nb_timesteps)
         # and reduce feature dimensions, therefore we reshape
-        x = self.transform(x)
-
-        nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape
-        mix = x.detach().clone()
+        trans_x = self.transform(x)
+        if advTrain:
+            y = self.transform(y)
+            trans_x = fgsm_attack(trans_x-y, 0.5, self.gradient)+y
+        
+        nb_frames, nb_samples, nb_channels, nb_bins = trans_x.data.shape
+        mix = trans_x.detach().clone()
 
         # crop
-        x = x[..., :self.nb_bins]
+        x = trans_x[..., :self.nb_bins]
 
         # shift and scale input to mean=0 std=1 (across all bins)
-        x += self.input_mean
-        x *= self.input_scale
+        x = x + self.input_mean
+        x = x * self.input_scale
 
         # to (nb_frames*nb_samples, nb_channels*nb_bins)
         # and encode to (nb_frames*nb_samples, hidden_size)
         x = self.fc1(x.reshape(-1, nb_channels*self.nb_bins))
         x = self.bn1(x)
         x = x.reshape(nb_frames, nb_samples, self.hidden_size)
-        x = torch.tanh(x)
-        lstm_out = self.lstm(x)
+        x_out = torch.tanh(x)
+        #lstm_out = self.lstm(x)
 
         # lstm skip connection to decode spectrogram
-        x = torch.cat([x, self.lstm_sep(lstm_out[0])[0]], -1)
+        x = torch.cat([x, self.lstm_sep(x_out)[0]], -1)
+        #x = torch.cat([x, lstm_out[0]], -1)
         x = self.fc2(x.reshape(-1, x.shape[-1]))
         x = self.bn2(x)
         x = F.relu(x)
         x = self.fc3(x)
         x = self.bn3(x)
         x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
-
+        '''
         # inst branch
-        act_out = self.lstm_act(lstm_out[0])[0]
+        act_out = self.lstm_act(x_out)[0]
         y_inst = self.fc2_inst(act_out.reshape(-1, act_out.shape[-1]))
         y_inst = self.bn2_inst(y_inst)
         y_inst = F.relu(y_inst)
         y_inst = self.fc3_inst(y_inst)
         y_inst = y_inst.reshape(nb_frames, nb_samples, nb_channels)
-  
+        '''
         # apply output scaling
         x *= self.output_scale
         x += self.output_mean
 
         # since our output is non-negative, we can apply RELU
-        
         '''
         inst_filter = F.sigmoid(y_inst)
         one = torch.ones(inst_filter.shape).float().to(device)
-        zero = torch.zeros(inst_filter.shape).float().to(device)
-        inst_filter = torch.where(inst_filter>0.5, one, zero)
+        #zero = torch.zeros(inst_filter.shape).float().to(device)
+        inst_filter = torch.where(inst_filter>0.5, one, inst_filter)
+        x = F.relu(x)*inst_filter.detach().unsqueeze(-1) * mix
         '''
-        #x = F.relu(x)*F.sigmoid(y_inst).unsqueeze(-1) * mix
-        x = F.relu(x)*F.sigmoid(y_inst).unsqueeze(-1) * mix
+        x = F.relu(x) * mix
+        y_inst = self.enhance(x.reshape(nb_frames, nb_samples, nb_channels*self.nb_output_bins)).squeeze(-1)
      
-        return x, y_inst
+        return x, y_inst, trans_x
 
 class OpenUnmix_multiinp(nn.Module):
     def __init__(

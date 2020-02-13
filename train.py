@@ -14,14 +14,16 @@ from git import Repo
 import os
 import copy
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '1' 
 tqdm.monitor_interval = 0
 
-def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha):
+def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha, advTrain):
 
     if args.mode=='multitask':
-        Y_hat, Y_inst_hat = unmix(x, device)
+        Y_hat, Y_inst_hat, trans_x = unmix(x, device, y, advTrain)
     elif args.mode=='ori':
         Y_hat = unmix(x)
     elif args.mode=='multiinp':
@@ -32,15 +34,28 @@ def start_train(x, y, Y_inst, args, unmix, device, optimizer, alpha):
     loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
     if args.mode=='multitask':
+        '''
+        print(Y_inst.min(), Y_inst.max())
+        fig, axs = plt.subplots(2)
+        axs[0].plot(Y_inst[0].sum(0).cpu().detach().numpy())
+        axs[1].plot(unmix.transform(y)[:,0,:,:].sum(1).sum(1).cpu().detach().numpy())
+        plt.savefig('tmp/'+str(np.random.randint(100, size=1)))
+        '''
         Y_inst[Y_inst>=0.5] = 1
         Y_inst[Y_inst<0.5] = 0
+
+        weight = -(1-Y_inst.copy())
         
-        loss_inst = torch.nn.functional.binary_cross_entropy_with_logits(Y_inst_hat.permute(1,2,0), Y_inst)
+        loss_inst = torch.nn.functional.binary_cross_entropy_with_logits(Y_inst_hat.permute(1,2,0), Y_inst, weight=weight)
+
+    trans_x.retain_grad()
 
     if args.mode=='multitask':
         (alpha*(loss+loss_inst*2)).backward()
     elif args.mode=='ori' or args.mode=='multiinp':
         (loss).backward()
+
+    unmix.gradient = trans_x.grad.data 
 
     return loss
 
@@ -58,11 +73,9 @@ def train(args, unmix, device, train_sampler, optimizer):
 
         optimizer.zero_grad()
 
-        loss = start_train(x, y, Y_inst, args, unmix, device, optimizer, 1)
-        if args.advTrain:
-            new_x = utils.fgsm_attack(x-y, 0.01, x.grad.data)+y
+        loss = start_train(x, y, Y_inst, args, unmix, device, optimizer, 1, False)
 
-            loss2 = start_train(new_x, y, Y_inst, args, unmix, device, optimizer, 0.1)
+        loss2 = start_train(x, y, Y_inst, args, unmix, device, optimizer, 0.1, True)
 
         optimizer.step()
         
@@ -78,7 +91,7 @@ def valid(args, unmix, device, valid_sampler):
         for x, y, inst in valid_sampler:
             x, y, inst = x.to(device), y.to(device), inst.float().to(device)
             if args.mode == 'multitask':
-                Y_hat, Y_inst_hat = unmix(x, device)
+                Y_hat, Y_inst_hat, _ = unmix(x, device)
             elif args.mode == 'ori':
                 Y_hat = unmix(x)
             elif args.mode=='multiinp':
@@ -100,7 +113,7 @@ def get_statistics(args, dataset):
 
     dataset_scaler = copy.deepcopy(dataset)
     dataset_scaler.samples_per_track = 1
-    dataset_scaler.augmentations = None
+    dataset_scaler.source_augmentations = None
     dataset_scaler.random_chunks = False
     dataset_scaler.random_track_mix = False
     dataset_scaler.random_interferer_mix = False
