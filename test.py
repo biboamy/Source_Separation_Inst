@@ -4,83 +4,36 @@ import argparse
 import soundfile as sf
 import norbert
 import json
-from pathlib import Path
+import os
 import scipy.signal
-import resampy
 import model
-import utils
 import warnings
 import tqdm
-from contextlib import redirect_stderr
-import io
-from utils import compute_activation_confidence
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import f1_score
 
-def load_model(target, model_name='umxhq', device='cpu', args=None):
-    """
-    target model path can be either <target>.pth, or <target>-sha256.pth
-    (as used on torchub)
-    """
-    model_path = Path(model_name).expanduser()
-    if not model_path.exists():
-        # model path does not exist, use hubconf model
-        try:
-            # disable progress bar
-            err = io.StringIO()
-            with redirect_stderr(err):
-                return torch.hub.load(
-                    'sigsep/open-unmix-pytorch',
-                    model_name,
-                    target=target,
-                    device=device,
-                    pretrained=True
-                )
-            print(err.getvalue())
-        except AttributeError:
-            raise NameError('Model does not exist on torchhub')
-            # assume model is a path to a local model_name direcotry
+
+def load_model(target, model_name='Unet', device='cpu', args=None):
+    model_path = os.path.join('pre-train-model', model_name)
+    if not os.path.exists(model_path):
+        raise NameError('Model not exists')
     else:
-        # load model from disk
-        with open(Path(model_path, target + '.json'), 'r') as stream:
-            results = json.load(stream)
 
-        target_model_path = next(Path(model_path).glob("%s*.pth" % target))
+        target_model_path = os.path.join(model_path, target + ".pth")
         state = torch.load(
             target_model_path,
             map_location=device
         )
 
-        max_bin = utils.bandwidth_to_max_bin(
-            state['sample_rate'],
-            results['args']['nfft'],
-            results['args']['bandwidth']
+        with open(os.path.join(model_path, target + ".json"), 'r') as json_file:
+            results = json.load(json_file)
+
+        unmix = model.Unet(
+            n_fft=results['args']['nfft'],
+            n_hop=results['args']['nhop'],
+            nb_channels=1, #results['args']['nb_channels'],
+            hidden_size=results['args']['hidden_size'],
+            max_bin=1487,
+            args=args
         )
-        #print(model.OpenUnmix_multitask.parameters())
-        if args.mode=='multitask':
-            unmix = model.OpenUnmix_multitask(
-                n_fft=results['args']['nfft'],
-                n_hop=results['args']['nhop'],
-                nb_channels=results['args']['nb_channels'],
-                hidden_size=results['args']['hidden_size'],
-                max_bin=max_bin
-            )
-        elif args.mode=='ori':
-            unmix = model.OpenUnmix(
-                n_fft=results['args']['nfft'],
-                n_hop=results['args']['nhop'],
-                nb_channels=results['args']['nb_channels'],
-                hidden_size=results['args']['hidden_size'],
-                max_bin=max_bin
-            )
-        elif args.mode=='multiinp':
-            unmix = model.OpenUnmix_multiinp(
-                n_fft=results['args']['nfft'],
-                n_hop=results['args']['nhop'],
-                nb_channels=results['args']['nb_channels'],
-                hidden_size=results['args']['hidden_size'],
-                max_bin=max_bin
-            )
     
         unmix.load_state_dict(state)
         unmix.stft.center = True
@@ -102,273 +55,78 @@ def istft(X, rate=44100, n_fft=4096, n_hopsize=1024):
 
 def separate(
     audio,
-    targets,
-    model_name='umxhq',
-    niter=1, softmask=False, alpha=1.0,
-    residual_model=False, device='cpu',args=None, target_audio=None
+    target,
+    model_name='Unet',
+    device='cpu'
 ):
-    """
-    Performing the separation on audio input
-
-    Parameters
-    ----------
-    audio: np.ndarray [shape=(nb_samples, nb_channels, nb_timesteps)]
-        mixture audio
-
-    targets: list of str
-        a list of the separation targets.
-        Note that for each target a separate model is expected
-        to be loaded.
-
-    model_name: str
-        name of torchhub model or path to model folder, defaults to `umxhq`
-
-    niter: int
-         Number of EM steps for refining initial estimates in a
-         post-processing stage, defaults to 1.
-
-    softmask: boolean
-        if activated, then the initial estimates for the sources will
-        be obtained through a ratio mask of the mixture STFT, and not
-        by using the default behavior of reconstructing waveforms
-        by using the mixture phase, defaults to False
-
-    alpha: float
-        changes the exponent to use for building ratio masks, defaults to 1.0
-
-    residual_model: boolean
-        computes a residual target, for custom separation scenarios
-        when not all targets are available, defaults to False
-
-    device: str
-        set torch device. Defaults to `cpu`.
-
-    Returns
-    -------
-    estimates: `dict` [`str`, `np.ndarray`]
-        dictionary of all restimates as performed by the separation model.
-
-    """
-    # convert numpy audio to torch
-    audio_torch = torch.tensor(audio.T[None, ...]).float().to(device)
-    activity, frame_time = compute_activation_confidence(audio)
-    inst_gt = torch.from_numpy(activity).float().to(device)
-    frame_time = np.floor(frame_time)
+    
+    audio_torch = torch.tensor(audio.T[None, ...]).float().to(device).unsqueeze(0)
 
     source_names = []
     V = []
-
-    for j, target in enumerate(tqdm.tqdm(targets)):
-        unmix_target = load_model(
-            target=target,
-            model_name=model_name,
-            device=device,
-            args=args
-        )
-        if args.mode=='multitask':
-            Vj, inst_act = unmix_target(audio_torch, device)
-            Vj = Vj.cpu().detach().numpy()
-            inst_act = inst_act.squeeze().T.cpu().detach().numpy()
-        elif args.mode=='ori':
-            Vj = unmix_target(audio_torch).cpu().detach().numpy()
-        elif args.mode=='multiinp':
-            Vj = unmix_target(audio_torch, inst_gt[None, ...]).cpu().detach().numpy()
-        if softmask:
-            # only exponentiate the model if we use softmask
-            Vj = Vj**alpha
-        # output is nb_frames, nb_samples, nb_channels, nb_bins
-        V.append(Vj[:, 0, ...])  # remove sample dim
-        source_names += [target]
-
-    if args.mode=='multitask' and args.testInst:
-        inst_gt[inst_gt>0.5] = 1
-        inst_gt[inst_gt<=0.5] = 0
-        inst_gt = inst_gt.sum(0, keepdims=True) / 2
-        inst_gt[inst_gt>0] = 1
-
-        inst_act_prob = inst_act
-        inst_act_prob = inst_act_prob.max(0, keepdims=True)
-
-        inst_act[inst_act>0.5] = 1
-        inst_act[inst_act<=0.5] = 1
-        inst_act = inst_act.sum(0, keepdims=True) / 2
-        inst_act[inst_act>0] = 1
-        
-        inst_gt = np.concatenate((np.expand_dims(frame_time, 0), inst_gt)).T
-        inst_act = np.concatenate((np.expand_dims(frame_time, 0), inst_act)).T
-        inst_act_prob = np.concatenate((np.expand_dims(frame_time, 0), inst_act_prob)).T
-
-        inst_gt = np.split(inst_gt[:, 1], np.cumsum(np.unique(inst_gt[:, 0], return_counts=True)[1])[:-1])
-        inst_act = np.split(inst_act[:, 1], np.cumsum(np.unique(inst_act[:, 0], return_counts=True)[1])[:-1])
-        inst_act_prob = np.split(inst_act_prob[:, 1], np.cumsum(np.unique(inst_act_prob[:, 0], return_counts=True)[1])[:-1])
-        
-        inst_gt = np.array([sum(a) for a in inst_gt])
-        inst_act = np.array([sum(a) for a in inst_act])
-        inst_act_prob = np.array([max(a) for a in inst_act_prob])
-
-        inst_gt[inst_gt>0] = 1
-        inst_act[inst_act>0] = 1
-
-        print(inst_gt.max(), inst_gt.min())
-
-        f1 = f1_score(inst_gt, inst_act)
-        auc = roc_auc_score(inst_gt, inst_act_prob)
-        print()
-        print("F1: %f / AUC: %f", f1, auc)
-
+    unmix_target = load_model(
+        target=target,
+        model_name=model_name,
+        device=device,
+        args=args
+    )
+    Vj, _ = unmix_target(audio_torch, device, threshold=0.5)
+    Vj = Vj.cpu().detach().numpy()
+    V.append(Vj[:, 0, ...])
+    source_names += [target]
     V = np.transpose(np.array(V), (1, 3, 2, 0))
-
     X = unmix_target.stft(audio_torch).detach().cpu().numpy()
-    # convert to complex numpy type
+   
     X = X[..., 0] + X[..., 1]*1j
     X = X[0].transpose(2, 1, 0)
-    '''
-    if residual_model or len(targets) == 1:
-        V = norbert.residual_model(V, X, alpha if softmask else 1)
-        source_names += (['residual'] if len(targets) > 1
-                         else ['accompaniment'])
-
-    Y = norbert.wiener(V, X.astype(np.complex128), niter,
-                       use_softmask=softmask)
-    '''
-    V = np.concatenate((V,V), axis=3)
     Y = V * np.exp(1j*np.angle(X[..., None]))
-    source_names += (['residual'] if len(targets) > 1 else ['accompaniment'])
-
-    estimates = {}
+    
+    estimates = []
     for j, name in enumerate(source_names):
         audio_hat = istft(
             Y[..., j].T,
             n_fft=unmix_target.stft.n_fft,
             n_hopsize=unmix_target.stft.n_hop
         )
-        estimates[name] = audio_hat.T
 
-    return estimates, [f1, auc]
+        estimates.append(audio_hat.T)
+    Y = np.array(estimates)
 
+    return Y
 
-def inference_args(parser, remaining_args):
-    inf_parser = argparse.ArgumentParser(
-        description=__doc__,
-        parents=[parser],
-        add_help=True,
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    inf_parser.add_argument(
-        '--softmask',
-        dest='softmask',
-        action='store_true',
-        help=('if enabled, will initialize separation with softmask.'
-              'otherwise, will use mixture phase with spectrogram')
-    )
-
-    inf_parser.add_argument(
-        '--niter',
-        type=int,
-        default=1,
-        help='number of iterations for refining results.'
-    )
-
-    inf_parser.add_argument(
-        '--alpha',
-        type=float,
-        default=1.0,
-        help='exponent in case of softmask separation'
-    )
-
-    inf_parser.add_argument(
-        '--samplerate',
-        type=int,
-        default=44100,
-        help='model samplerate'
-    )
-
-    inf_parser.add_argument(
-        '--residual-model',
-        action='store_true',
-        help='create a model for the residual'
-    )
-    return inf_parser.parse_args()
-
-
-def test_main(
-    input_files=None, samplerate=44100, niter=1, alpha=1.0,
-    softmask=False, residual_model=False, model='umxhq',
-    targets=('vocals', 'drums', 'bass', 'other'),
-    outdir=None, start=0.0, duration=-1.0, no_cuda=False
+def main(
+    input_file=None, samplerate=44100, model='Unet',
+    target='vox', outdir='output_file', no_cuda=False
 ):
 
     use_cuda = not no_cuda and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    for input_file in input_files:
-        # handling an input audio path
-        info = sf.info(input_file)
-        start = int(start * info.samplerate)
-        # check if dur is none
-        if duration > 0:
-            # stop in soundfile is calc in samples, not seconds
-            stop = start + int(duration * info.samplerate)
-        else:
-            # set to None for reading complete file
-            stop = None
+    info = sf.info(input_file)
+    audio, rate = sf.read('test_audio/test.wav')
+    if audio.shape[1] > 2:
+        warnings.warn(
+            'Channel count > 2! '
+            'Only the first two channels will be processed!')
+        audio = audio[:, :2]
+    if audio.shape[1] == 2:
+        audio = audio.sum(1)
+    if rate != samplerate:
+        audio = resampy.resample(audio, rate, samplerate, axis=0)
 
-        audio, rate = sf.read(
-            input_file,
-            always_2d=True,
-            start=start,
-            stop=stop
-        )
+    # start separation
+    est = separate(
+        audio=audio,
+        target=target,
+        model_name=model,
+        device=device
+    )
 
-        if audio.shape[1] > 2:
-            warnings.warn(
-                'Channel count > 2! '
-                'Only the first two channels will be processed!')
-            audio = audio[:, :2]
-
-        if rate != samplerate:
-            # resample to model samplerate if needed
-            audio = resampy.resample(audio, rate, samplerate, axis=0)
-
-        if audio.shape[1] == 1:
-            # if we have mono, let's duplicate it
-            # as the input of OpenUnmix is always stereo
-            audio = np.repeat(audio, 2, axis=1)
-
-        estimates = separate(
-            audio,
-            targets=targets,
-            model_name=model,
-            niter=niter,
-            alpha=alpha,
-            softmask=softmask,
-            residual_model=residual_model,
-            device=device
-        )
-        if not outdir:
-            model_path = Path(model)
-            if not model_path.exists():
-                output_path = Path(Path(input_file).stem + '_' + model)
-            else:
-                output_path = Path(
-                    Path(input_file).stem + '_' + model_path.stem
-                )
-        else:
-            if len(input_files) > 1:
-                output_path = Path(outdir) / Path(input_file).stem
-            else:
-                output_path = Path(outdir)
-
-        output_path.mkdir(exist_ok=True, parents=True)
-
-        for target, estimate in estimates.items():
-            sf.write(
-                str(output_path / Path(target).with_suffix('.wav')),
-                estimate,
-                samplerate
-            )
-
+    # save file
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir)
+    file_name = os.path.basename(args.input)
+    sf.write(os.path.join(args.outdir, file_name), est[0], 44100)
 
 if __name__ == '__main__':
     # Training settings
@@ -378,46 +136,44 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        'input',
+        '--input',
         type=str,
-        nargs='+',
-        help='List of paths to wav/flac files.'
+        help='input file path'
     )
 
     parser.add_argument(
-        '--targets',
-        nargs='+',
-        default=['vocals', 'drums', 'bass', 'other'],
+        '--target',
+        default='vox',
         type=str,
-        help='provide targets to be processed. \
-              If none, all available targets will be computed'
+        help="provide targets to be processed: 'acgtr', 'bass', 'drum', 'elecgtr', 'piano', 'vox'"
     )
 
     parser.add_argument(
         '--outdir',
         type=str,
+        default='output_file/',
         help='Results path where audio evaluation results are stored'
     )
 
     parser.add_argument(
-        '--start',
-        type=float,
-        default=0.0,
-        help='Audio chunk start in seconds'
-    )
-
-    parser.add_argument(
-        '--duration',
-        type=float,
-        default=-1.0,
-        help='Audio chunk duration in seconds, negative values load full track'
-    )
-
-    parser.add_argument(
         '--model',
-        default='umxhq',
+        default='Unet',
         type=str,
         help='path to mode base directory of pretrained models'
+    )
+
+    parser.add_argument(
+        '--samplerate',
+        type=int,
+        default=44100,
+        help='model samplerate'
+    )
+
+    parser.add_argument(
+        '--post',
+        type=str,
+        default='other',
+        help='model post processing: "wiener" or "other"'
     )
 
     parser.add_argument(
@@ -428,12 +184,8 @@ if __name__ == '__main__':
     )
 
     args, _ = parser.parse_known_args()
-    args = inference_args(parser, args)
 
-    test_main(
-        input_files=args.input, samplerate=args.samplerate,
-        alpha=args.alpha, softmask=args.softmask, niter=args.niter,
-        residual_model=args.residual_model, model=args.model,
-        targets=args.targets, outdir=args.outdir, start=args.start,
-        duration=args.duration, no_cuda=args.no_cuda
+    main(
+        input_file=args.input, samplerate=args.samplerate, model=args.model,
+        target=args.target, outdir=args.outdir, no_cuda=args.no_cuda
     )
