@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from structure import *
 batchNorm_momentum = 0.1
 
 class block(nn.Module):

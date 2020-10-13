@@ -194,7 +194,7 @@ class Unet(nn.Module):
             torch.ones(self.nb_output_bins).float()
         )
     #@profile
-    def forward(self, x, device, threshold=0.5):
+    def forward(self, x, device, threshold=0.5, target='vox'):
         # check for waveform or spectrogram
         # transform to spectrogram if (nb_samples, nb_channels, nb_timesteps)
         # and reduce feature dimensions, therefore we reshape
@@ -205,8 +205,8 @@ class Unet(nn.Module):
         # crop
         x = x[..., :self.nb_bins].contiguous()
         # shift and scale input to mean=0 std=1 (across all bins)
-        x += self.input_mean
-        x *= self.input_scale
+        x -= self.input_mean
+        x /= self.input_scale
         # to (nb_frames*nb_samples, nb_channels*nb_bins)
         # and encode to (nb_frames*nb_samples, hidden_size)
         x, idx, s, c = self.encode(x.permute(1,2,3,0).contiguous())
@@ -224,7 +224,7 @@ class Unet(nn.Module):
         zero = torch.zeros(inst_filter.shape).float().to(device)
         inst_filter = torch.where(inst_filter>threshold, one, zero)
         inst_filter = m_filter(inst_filter).permute(3,0,1,2)
-    
-        x = F.relu(x)*inst_filter * mix
+        
+        x = F.relu(x) * inst_filter * mix
         return x, F.sigmoid(y_inst)
       

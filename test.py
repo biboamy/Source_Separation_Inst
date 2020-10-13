@@ -22,7 +22,7 @@ def load_model(target, model_name='Unet', device='cpu', args=None):
             target_model_path,
             map_location=device
         )
-
+        
         with open(os.path.join(model_path, target + ".json"), 'r') as json_file:
             results = json.load(json_file)
 
@@ -34,8 +34,11 @@ def load_model(target, model_name='Unet', device='cpu', args=None):
             max_bin=1487,
             args=args
         )
-    
-        unmix.load_state_dict(state)
+        model_dict = unmix.state_dict()
+
+        pretrained_dict = {k: v for k, v in state.items() if k in model_dict}
+        model_dict.update(pretrained_dict) 
+        unmix.load_state_dict(model_dict)
         unmix.stft.center = True
         unmix.eval()
         unmix.to(device)
@@ -70,7 +73,7 @@ def separate(
         device=device,
         args=args
     )
-    Vj, _ = unmix_target(audio_torch, device, threshold=0.5)
+    Vj, _ = unmix_target(audio_torch, device, threshold=0.5, target=target)
     Vj = Vj.cpu().detach().numpy()
     V.append(Vj[:, 0, ...])
     source_names += [target]
@@ -103,7 +106,7 @@ def main(
     device = torch.device("cuda" if use_cuda else "cpu")
 
     info = sf.info(input_file)
-    audio, rate = sf.read('test_audio/test.wav')
+    audio, rate = sf.read(input_file)
     if audio.shape[1] > 2:
         warnings.warn(
             'Channel count > 2! '
@@ -125,7 +128,7 @@ def main(
     # save file
     if not os.path.exists(args.outdir):
         os.mkdir(args.outdir)
-    file_name = os.path.basename(args.input)
+    file_name = os.path.basename(args.input).replace('.wav', '-'+target+'.wav')
     sf.write(os.path.join(args.outdir, file_name), est[0], 44100)
 
 if __name__ == '__main__':
